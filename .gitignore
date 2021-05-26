@@ -106,3 +106,4 @@ dist
 package-lock.json
 credentials.json
 token.json
+index.js
