@@ -1,14 +1,18 @@
-import { google } from "googleapis";
+import { calendar_v3, google } from "googleapis";
 import * as readline from "readline";
 import { readFile, writeFile } from "fs";
 import { Credentials, GoogleAuth, OAuth2Client } from "google-auth-library";
 import { GaxiosResponse } from "gaxios";
 import { rejects } from "assert/strict";
 import { timeFormat, timeParse } from "d3-time-format";
+import { BodyResponseCallback } from "googleapis-common";
 
 const cloneDeep = require("lodash.clonedeep");
 
-const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"];
+const SCOPES = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
+];
 const TOKEN_PATH = "token.json";
 
 interface authorizeProps {
@@ -86,102 +90,118 @@ const getNewToken = ({ oAuth2Client, callback }: getNewTokenProps) => {
 };
 
 const getBookings = async (oAuth2Client: OAuth2Client) => {
-  const gmail = google.gmail("v1");
-  
+  const gmail = google.gmail({version: "v1", auth: oAuth2Client});
+
   let res = await gmail.users.messages.list({
     userId: "me",
     q: "from:donotreply@rockgympro.com",
+    auth: oAuth2Client,
   });
 
-  let allBoulderHouseEmails: Message[] = [] = cloneDeep(res.data.messages);
+  let allBoulderHouseEmails: Message[] = ([] = cloneDeep(res.data.messages));
   let boulderHouseBookingEmails: [string, string][] = [];
 
   for (let message of allBoulderHouseEmails) {
     let { data } = await gmail.users.threads.get({
-        userId: "me",
-        id: message.id,
-      });
-  
-      if (data.messages && data.messages[0]) {
-        let payload = data.messages[0].payload;
-        if (payload && payload.headers) {
-          if (payload.headers.filter((header) => header.name === "Subject")[0]) {
-            let bookingDateString: string | undefined = payload.headers.filter(
-              (header) => header.name === "Subject"
-            )[0].value;
-            let receivedDateString: string | undefined = payload.headers.filter(
-                (header) => header.name === "Date"
-            )[0].value;
-            if (bookingDateString !== undefined && receivedDateString !== undefined) boulderHouseBookingEmails.push([bookingDateString.substr(52, bookingDateString.length), receivedDateString]);
-          }
+      userId: "me",
+      id: message.id,
+    });
+
+    if (data.messages && data.messages[0]) {
+      let payload = data.messages[0].payload;
+      if (payload && payload.headers) {
+        if (payload.headers.filter((header) => header.name === "Subject")[0]) {
+          let bookingDateString: string | null | undefined =
+            payload.headers.filter((header) => header.name === "Subject")[0]
+              .value;
+          let receivedDateString: string | null | undefined =
+            payload.headers.filter((header) => header.name === "Date")[0].value;
+          if (
+            typeof bookingDateString === "string" &&
+            typeof receivedDateString === "string"
+          )
+            boulderHouseBookingEmails.push([
+              bookingDateString.substr(52, bookingDateString.length),
+              receivedDateString,
+            ]);
         }
       }
+    }
   }
-  
+
   return boulderHouseBookingEmails;
 };
 
-const parseDates = async (dateStrings:  [string, string][] ) => {
-    const dates: Date[] = [];
-    const formatBookingDate = timeParse("%a, %B %-d, %I %p")
-    const now = new Date();
+const parseDates = async (dateStrings: [string, string][]) => {
+  const dates: Date[] = [];
+  const formatBookingDate = timeParse("%a, %B %-d, %I %p");
+  const now = new Date();
 
-    for (let dateTuple of dateStrings) {
-        const [bookingDateString, receivedDateString] = dateTuple;
+  for (let dateTuple of dateStrings) {
+    const [bookingDateString, receivedDateString] = dateTuple;
 
-        let bookingDate = formatBookingDate(bookingDateString);
-        let receivedDate = new Date(receivedDateString);
+    let bookingDate = formatBookingDate(bookingDateString);
+    let receivedDate = new Date(receivedDateString);
 
-        if (bookingDate && receivedDate && bookingDate.getMonth() < receivedDate.getMonth()) {
-            bookingDate.setFullYear(receivedDate.getFullYear() + 1);
-        } else if (bookingDate) {
-            bookingDate.setFullYear(now.getFullYear())
-        }
-
-        if (bookingDate) dates.push(bookingDate);
+    if (
+      bookingDate &&
+      receivedDate &&
+      bookingDate.getMonth() < receivedDate.getMonth()
+    ) {
+      bookingDate.setFullYear(receivedDate.getFullYear() + 1);
+    } else if (bookingDate) {
+      bookingDate.setFullYear(now.getFullYear());
     }
 
-    return dates;
-}
+    if (bookingDate) dates.push(bookingDate);
+  }
+
+  return dates;
+};
 
 const uploadToCalendar = async (oAuth2Client: OAuth2Client, dates: Date[]) => {
-    const calendar = google.calendar("v3")
+  const calendar = google.calendar({version: "v3", auth: oAuth2Client});
 
-    for (let date of dates) {
-        if (date.getTime() < Date.now()) continue;
+  for (let date of dates) {
+    if (date.getTime() < Date.now()) continue;
 
-        const end = new Date(date);
-        end.setHours(end.getHours() + 2);
+    const end = new Date(date);
+    end.setHours(end.getHours() + 2);
 
-        const event = {
-            summary: "Climbing",
-            location: "2829 Quesnel St, Victoria, BC",
-            start: {
-                dateTime: date.toISOString(),
-                timeZone: "America/Vancouver",
-            },
-            end: {
-                dateTime: end.toISOString(),
-                timeZone: "America/Vancouver",
-            },
-            recurrence: [],
-            attendees: [],
-            reminder: { useDefault: true }
+    const event = {
+      summary: "Climbing",
+      location: "2829 Quesnel St, Victoria, BC",
+      start: {
+        dateTime: date.toISOString(),
+        timeZone: "America/Vancouver",
+      },
+      end: {
+        dateTime: end.toISOString(),
+        timeZone: "America/Vancouver",
+      },
+      recurrence: [],
+      attendees: [],
+      reminder: { useDefault: true },
+    };
+
+    calendar.events.insert(
+      {
+        calendarId: "primary",
+        auth: oAuth2Client,
+        requestBody: event,
+      },
+      (err: Error | null) => {
+        if (err) {
+          console.log(
+            "There was an error contacting the Calendar service: " + err
+          );
+          return;
         }
-
-        calendar.events.insert({
-            calendarId: 'primary',
-            auth: oAuth2Client,
-            resource: event,
-          }, (err, event) => {
-            if (err) {
-              console.log('There was an error contacting the Calendar service: ' + err);
-              return;
-            }
-            console.log(event.config.url);
-          });
-    }
-}
+        console.log(`Added booking for ${date.toLocaleString()}`);
+      }
+    );
+  }
+};
 
 export const syncBookings = async (oAuth2Client: OAuth2Client) => {
   const bookings = await getBookings(oAuth2Client);
